@@ -2,11 +2,11 @@
   "rewrites": [
     {
       "source": "/(.*)",
-      "destination": "/addon.js"
+      "destination": "/api/addon.js"
     }
   ],
   "functions": {
-    "addon.js": {
+    "api/addon.js": {
       "maxDuration": 60,
       "memory": 1024
     }
