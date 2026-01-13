@@ -10,7 +10,8 @@ const manifest = {
     description: "Private Vercel Deployment",
     resources: ["stream"],
     types: ["movie", "series"],
-    idPrefixes: ["tt"]
+    idPrefixes: ["tt"],
+    catalogs: []
 };
 
 const builder = new addonBuilder(manifest);
