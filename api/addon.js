@@ -1,18 +1,16 @@
-// 1. Load Environment Variables (Local Support)
 require("dotenv").config();
-
 const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 const fetch = require("node-fetch");
 const puppeteer = require("puppeteer");
 
 const manifest = {
   id: "community.vidking.render",
-  version: "1.1.0",
-  name: "VidKing Render (Working)",
+  version: "1.1.5",
+  name: "VidKing Render (Standard)",
   description: "Hosted on Render Singapore",
   resources: ["stream"],
   types: ["movie", "series"],
-  catalogs: [], 
+  catalogs: [], // Keeps the 500 error fix
   idPrefixes: ["tt"],
 };
 
@@ -23,17 +21,14 @@ async function getStreamDetails(embedUrl) {
   let browser = null;
 
   try {
+    // STANDARD LAUNCH: No aggressive memory limits
     browser = await puppeteer.launch({
       headless: "new",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-accelerated-2d-canvas",
-        "--disable-gpu",
-        "--single-process", 
-        "--no-zygote",      
-        "--renderer-process-limit=1" 
+        "--disable-dev-shm-usage", // Necessary for Docker to not crash
+        "--disable-gpu"
       ],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, 
     });
@@ -41,26 +36,19 @@ async function getStreamDetails(embedUrl) {
     const page = await browser.newPage();
     let videoUrl = null;
 
+    // LIGHTWEIGHT INTERCEPTION: Only grab the URL, don't block files
+    // This ensures we don't accidentally break the player
     await page.setRequestInterception(true);
-    
-    // ✅ CRITICAL FIX: We are now allowing 'script' so the player can load
     page.on("request", (req) => {
-      const rType = req.resourceType();
       const rUrl = req.url();
 
-      // 1. Check if we found the video!
+      // Check for the video file
       if (rUrl.includes(".m3u8") || (rUrl.includes(".mp4") && !rUrl.includes("loader"))) {
         console.log("✅ Found stream:", rUrl);
         videoUrl = rUrl;
-        req.abort(); // Stop downloading, we just need the link!
-        return;
-      }
-
-      // 2. Block heavy assets (Images, Fonts, CSS) but ALLOW SCRIPTS
-      if (["image", "font", "media", "stylesheet"].includes(rType)) {
-        req.abort();
+        req.abort(); // We found it, stop loading!
       } else {
-        req.continue();
+        req.continue(); // Let everything else load normally
       }
     });
 
@@ -72,10 +60,10 @@ async function getStreamDetails(embedUrl) {
     try {
       await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
     } catch (e) {
-      // Ignore timeouts if the page is just slow
+      console.log("⚠️ Page load warning (continuing)");
     }
 
-    // Wait specifically for the videoUrl to be found
+    // Wait for the video URL to appear
     const startTime = Date.now();
     while (!videoUrl && Date.now() - startTime < 10000) {
       await new Promise((r) => setTimeout(r, 500));
