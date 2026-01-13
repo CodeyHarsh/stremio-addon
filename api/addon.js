@@ -5,12 +5,12 @@ const puppeteer = require("puppeteer");
 
 const manifest = {
   id: "community.vidking.render",
-  version: "1.1.5",
-  name: "VidKing Render (Standard)",
+  version: "1.1.6",
+  name: "VidKing Render (No-UI Mode)",
   description: "Hosted on Render Singapore",
   resources: ["stream"],
   types: ["movie", "series"],
-  catalogs: [], // Keeps the 500 error fix
+  catalogs: [], 
   idPrefixes: ["tt"],
 };
 
@@ -21,14 +21,15 @@ async function getStreamDetails(embedUrl) {
   let browser = null;
 
   try {
-    // STANDARD LAUNCH: No aggressive memory limits
     browser = await puppeteer.launch({
       headless: "new",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage", // Necessary for Docker to not crash
-        "--disable-gpu"
+        "--disable-dev-shm-usage",
+        "--disable-accelerated-2d-canvas", // Don't draw graphics
+        "--disable-gpu",
+        "--mute-audio" // Mute audio to save more resources
       ],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, 
     });
@@ -36,19 +37,29 @@ async function getStreamDetails(embedUrl) {
     const page = await browser.newPage();
     let videoUrl = null;
 
-    // LIGHTWEIGHT INTERCEPTION: Only grab the URL, don't block files
-    // This ensures we don't accidentally break the player
+    // ✅ SMART BLOCKING: Removes the "Look" but keeps the "Brain"
     await page.setRequestInterception(true);
     page.on("request", (req) => {
+      const rType = req.resourceType();
       const rUrl = req.url();
 
-      // Check for the video file
+      // 1. Did we find the video file?
       if (rUrl.includes(".m3u8") || (rUrl.includes(".mp4") && !rUrl.includes("loader"))) {
         console.log("✅ Found stream:", rUrl);
         videoUrl = rUrl;
-        req.abort(); // We found it, stop loading!
-      } else {
-        req.continue(); // Let everything else load normally
+        req.abort(); // Stop loading immediately
+        return;
+      }
+
+      // 2. BLOCK Visuals (Saves RAM)
+      // We block 'stylesheet' (CSS), 'image' (PNG/JPG), and 'font'.
+      if (["image", "stylesheet", "font", "media"].includes(rType)) {
+        req.abort();
+      } 
+      // 3. ALLOW Logic
+      // We explicitly allow 'script' so the player can start.
+      else {
+        req.continue();
       }
     });
 
@@ -60,7 +71,7 @@ async function getStreamDetails(embedUrl) {
     try {
       await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
     } catch (e) {
-      console.log("⚠️ Page load warning (continuing)");
+      // Ignore timeout if page is slow, scripts are likely already running
     }
 
     // Wait for the video URL to appear
