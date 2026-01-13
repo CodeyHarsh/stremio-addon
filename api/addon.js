@@ -1,16 +1,13 @@
-// 1. Load Environment Variables (Local Support)
-require('dotenv').config(); 
-
-const { addonBuilder, serveHTTP, getRouter } = require("stremio-addon-sdk");
+const { addonBuilder, getRouter } = require("stremio-addon-sdk");
 const fetch = require("node-fetch");
 const puppeteer = require("puppeteer-core");
 const chromium = require("@sparticuz/chromium");
 
 const manifest = {
-    id: "community.vidking.hybrid",
+    id: "community.vidking.private",
     version: "1.0.4",
-    name: "VidKing Private (Hybrid)",
-    description: "Works Locally & on Vercel",
+    name: "VidKing Private (Secure)",
+    description: "Private Vercel Deployment",
     resources: ["stream"],
     types: ["movie", "series"],
     idPrefixes: ["tt"]
@@ -23,30 +20,25 @@ async function getStreamDetails(embedUrl) {
     let browser = null;
     
     try {
-        // Detect if running on Vercel or Local
-        const isVercel = process.env.VERCEL === '1';
-
-        // Setup Chromium
-        if (isVercel) {
-            chromium.setGraphicsMode = false;
-        }
-
+        // Setup Chromium for Vercel
+        chromium.setGraphicsMode = false;
+        
         browser = await puppeteer.launch({
-            args: isVercel ? chromium.args : ['--no-sandbox', '--disable-setuid-sandbox'],
+            args: chromium.args,
             defaultViewport: chromium.defaultViewport,
-            executablePath: isVercel 
-                ? await chromium.executablePath() 
-                : "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", // <--- UPDATE THIS if needed for local!
-            headless: isVercel ? chromium.headless : true,
+            executablePath: await chromium.executablePath(),
+            headless: chromium.headless,
             ignoreHTTPSErrors: true
         });
 
         const page = await browser.newPage();
         let videoUrl = null;
 
+        // Sniff for m3u8 or mp4
         await page.setRequestInterception(true);
         page.on('request', req => {
-            if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
+            const rType = req.resourceType();
+            if (['image', 'stylesheet', 'font'].includes(rType)) {
                 req.abort();
             } else {
                 const url = req.url();
@@ -77,11 +69,11 @@ async function getStreamDetails(embedUrl) {
 }
 
 builder.defineStreamHandler(async (args) => {
-    // Gets Key from .env (Local) OR Vercel Settings (Cloud)
+    // SECURITY: Get Key from Vercel Settings (Hidden from public)
     const API_KEY = process.env.TMDB_API_KEY; 
     
     if (!API_KEY) {
-        console.log("❌ Error: TMDB_API_KEY is missing!");
+        console.log("❌ Error: TMDB_API_KEY is missing in Vercel Settings!");
         return { streams: [] };
     }
 
@@ -126,24 +118,16 @@ builder.defineStreamHandler(async (args) => {
     }
 });
 
-// --- HYBRID STARTUP LOGIC ---
-// If running on Vercel, export the handler
-if (process.env.VERCEL) {
-    const router = getRouter(builder.getInterface());
-    module.exports = (req, res) => {
-        if (req.url === '/') {
-            res.redirect('/manifest.json');
-            return;
-        }
-        router(req, res, () => {
-            res.statusCode = 404;
-            res.end();
-        });
-    };
-} 
-// If running Locally, start the server
-else {
-    serveHTTP(builder.getInterface(), { port: 7000 });
-    console.log("🚀 Local Server Running on http://127.0.0.1:7000/manifest.json");
-    console.log("🔑 API Key Loaded:", process.env.TMDB_API_KEY ? "Yes" : "No");
-}
+// Vercel Handler
+const router = getRouter(builder.getInterface());
+
+module.exports = (req, res) => {
+    if (req.url === '/') {
+        res.redirect('/manifest.json');
+        return;
+    }
+    router(req, res, () => {
+        res.statusCode = 404;
+        res.end();
+    });
+};
