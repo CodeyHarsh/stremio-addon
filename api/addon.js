@@ -5,12 +5,12 @@ const puppeteer = require("puppeteer");
 
 const manifest = {
   id: "community.vidking.render",
-  version: "1.1.6",
-  name: "VidKing Render (No-UI Mode)",
+  version: "1.1.7", // Bumped version
+  name: "VidKing Render (Click & Wait)",
   description: "Hosted on Render Singapore",
   resources: ["stream"],
   types: ["movie", "series"],
-  catalogs: [], 
+  catalogs: [],
   idPrefixes: ["tt"],
 };
 
@@ -27,17 +27,17 @@ async function getStreamDetails(embedUrl) {
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-accelerated-2d-canvas", // Don't draw graphics
+        "--disable-accelerated-2d-canvas",
         "--disable-gpu",
-        "--mute-audio" // Mute audio to save more resources
+        "--mute-audio",
       ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, 
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
     });
 
     const page = await browser.newPage();
     let videoUrl = null;
 
-    // ✅ SMART BLOCKING: Removes the "Look" but keeps the "Brain"
+    // ✅ SMART BLOCKING
     await page.setRequestInterception(true);
     page.on("request", (req) => {
       const rType = req.resourceType();
@@ -52,12 +52,10 @@ async function getStreamDetails(embedUrl) {
       }
 
       // 2. BLOCK Visuals (Saves RAM)
-      // We block 'stylesheet' (CSS), 'image' (PNG/JPG), and 'font'.
       if (["image", "stylesheet", "font", "media"].includes(rType)) {
         req.abort();
       } 
       // 3. ALLOW Logic
-      // We explicitly allow 'script' so the player can start.
       else {
         req.continue();
       }
@@ -66,21 +64,66 @@ async function getStreamDetails(embedUrl) {
     await page.setUserAgent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
     );
-    
+
     // Load the page
     try {
+      // Reduced timeout to fail faster if site is down
       await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
     } catch (e) {
-      // Ignore timeout if page is slow, scripts are likely already running
+      // Proceed even if timeout happens; elements might be there
     }
 
-    // Wait for the video URL to appear
+    // --- 🟢 NEW LOGIC: CLICK & WAIT ---
+    
+    // 1. Wait a tiny bit for iframes to populate
+    await new Promise((r) => setTimeout(r, 1000));
+
+    // 2. Loop through all frames (Main page + IFrames) to find the Play Button
+    console.log("point👉 Attempting to click Play...");
+    
+    const frames = page.frames();
+    for (const frame of frames) {
+      try {
+        await frame.evaluate(() => {
+          // Common selectors for video players (VideoJS, JWPlayer, HTML5)
+          const selectors = [
+            ".vjs-big-play-button", 
+            ".jw-display-icon-container", 
+            ".play-button", 
+            ".start-button",
+            "button[aria-label='Play']",
+            "video"
+          ];
+          
+          for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el) {
+              // Force a click event
+              el.click();
+              console.log("Clicked:", sel);
+              return; // Stop after first click in this frame
+            }
+          }
+        });
+      } catch (e) {
+        // Ignore cross-origin frame errors
+      }
+    }
+
+    // 3. YOUR REQUEST: Let it play/load for 3 seconds
+    console.log("⏳ Waiting 3s for network request...");
+    await new Promise((r) => setTimeout(r, 3000));
+    
+    // --- 🔴 END NEW LOGIC ---
+
+    // Final check loop (in case it took longer than 3s)
     const startTime = Date.now();
-    while (!videoUrl && Date.now() - startTime < 10000) {
+    while (!videoUrl && Date.now() - startTime < 5000) {
       await new Promise((r) => setTimeout(r, 500));
     }
 
     return videoUrl;
+
   } catch (error) {
     console.log("Browser Error:", error.message);
     return null;
@@ -113,6 +156,7 @@ builder.defineStreamHandler(async (args) => {
 
     const embedUrl =
       args.type === "movie"
+      // Note: Make sure this URL structure is correct for VidKing
         ? `https://www.vidking.net/embed/movie/${tmdbId}`
         : `https://www.vidking.net/embed/tv/${tmdbId}/${
             args.id.split(":")[1]
