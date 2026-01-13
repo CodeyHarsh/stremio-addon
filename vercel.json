@@ -1,20 +1,14 @@
 {
-  "version": 2,
-  "builds": [
+  "rewrites": [
     {
-      "src": "addon.js",
-      "use": "@vercel/node"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "/addon.js"
+      "source": "/(.*)",
+      "destination": "/addon.js"
     }
   ],
   "functions": {
     "addon.js": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "memory": 1024
     }
   }
 }
