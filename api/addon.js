@@ -7,12 +7,12 @@ const puppeteer = require("puppeteer");
 
 const manifest = {
   id: "community.vidking.render",
-  version: "1.0.9",
-  name: "VidKing Render (Optimized)",
+  version: "1.1.0",
+  name: "VidKing Render (Working)",
   description: "Hosted on Render Singapore",
   resources: ["stream"],
   types: ["movie", "series"],
-  catalogs: [], // ✅ FIXED: Must be an array to prevent 500 Error
+  catalogs: [], 
   idPrefixes: ["tt"],
 };
 
@@ -23,18 +23,17 @@ async function getStreamDetails(embedUrl) {
   let browser = null;
 
   try {
-    // ✅ FIXED: Low-Memory Settings to prevent Render Free Tier crashes
     browser = await puppeteer.launch({
       headless: "new",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage", // Critical for Docker/Render
+        "--disable-dev-shm-usage",
         "--disable-accelerated-2d-canvas",
         "--disable-gpu",
-        "--single-process", // Massive memory saver
-        "--no-zygote",      // Reduces memory usage
-        "--renderer-process-limit=1" // Limits Chrome to 1 tab process
+        "--single-process", 
+        "--no-zygote",      
+        "--renderer-process-limit=1" 
       ],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, 
     });
@@ -42,19 +41,25 @@ async function getStreamDetails(embedUrl) {
     const page = await browser.newPage();
     let videoUrl = null;
 
-    // ✅ OPTIMIZATION: Block heavy assets (images, css, fonts, scripts)
-    // This makes the page load 2x faster and uses 50% less RAM
     await page.setRequestInterception(true);
+    
+    // ✅ CRITICAL FIX: We are now allowing 'script' so the player can load
     page.on("request", (req) => {
-      if (["image", "stylesheet", "font", "script", "media"].includes(req.resourceType())) {
+      const rType = req.resourceType();
+      const rUrl = req.url();
+
+      // 1. Check if we found the video!
+      if (rUrl.includes(".m3u8") || (rUrl.includes(".mp4") && !rUrl.includes("loader"))) {
+        console.log("✅ Found stream:", rUrl);
+        videoUrl = rUrl;
+        req.abort(); // Stop downloading, we just need the link!
+        return;
+      }
+
+      // 2. Block heavy assets (Images, Fonts, CSS) but ALLOW SCRIPTS
+      if (["image", "font", "media", "stylesheet"].includes(rType)) {
         req.abort();
       } else {
-        const url = req.url();
-        // Look for the video file
-        if ((url.includes(".m3u8") || url.includes(".mp4")) && !videoUrl) {
-          console.log("✅ Found:", url);
-          videoUrl = url;
-        }
         req.continue();
       }
     });
@@ -63,16 +68,16 @@ async function getStreamDetails(embedUrl) {
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
     );
     
-    // Increased timeout slightly for safety on server
+    // Load the page
     try {
       await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
     } catch (e) {
-      console.log("⚠️ Page load timeout, checking if we found video anyway...");
+      // Ignore timeouts if the page is just slow
     }
 
+    // Wait specifically for the videoUrl to be found
     const startTime = Date.now();
-    // Wait up to 8 seconds for the video URL to appear
-    while (!videoUrl && Date.now() - startTime < 8000) {
+    while (!videoUrl && Date.now() - startTime < 10000) {
       await new Promise((r) => setTimeout(r, 500));
     }
 
@@ -81,13 +86,11 @@ async function getStreamDetails(embedUrl) {
     console.log("Browser Error:", error.message);
     return null;
   } finally {
-    // Always close browser to free up RAM
     if (browser) await browser.close();
   }
 }
 
 builder.defineStreamHandler(async (args) => {
-  // Gets Key from .env (Local) or Render Environment Variables
   const API_KEY = process.env.TMDB_API_KEY;
 
   if (!API_KEY) {
@@ -118,20 +121,22 @@ builder.defineStreamHandler(async (args) => {
 
     const streamUrl = await getStreamDetails(embedUrl);
 
-    if (!streamUrl) return { streams: [] };
+    if (!streamUrl) {
+        console.log("❌ No stream found for:", embedUrl);
+        return { streams: [] };
+    }
 
     return {
       streams: [
         {
-          title: "▶️ VidKing (Render SG)",
+          title: "▶️ VidKing (Render)",
           url: streamUrl,
           behaviorHints: {
             notWebReady: true,
             proxyHeaders: {
               request: {
                 Referer: "https://www.vidking.net/",
-                "User-Agent":
-                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
               },
             },
           },
@@ -144,9 +149,6 @@ builder.defineStreamHandler(async (args) => {
   }
 });
 
-// --- RENDER.COM STARTUP LOGIC ---
-// Render assigns a random port to process.env.PORT
 const port = process.env.PORT || 7000;
 serveHTTP(builder.getInterface(), { port: port });
 console.log(`🚀 Server running on port ${port}`);
-console.log(`🔗 Open: http://127.0.0.1:${port}/manifest.json`);
