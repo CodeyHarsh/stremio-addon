@@ -1,14 +1,15 @@
-// 1. Load Environment Variables
+// 1. Load Environment Variables (Local Support)
 require("dotenv").config();
+
 const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 const fetch = require("node-fetch");
 const puppeteer = require("puppeteer");
 
 const manifest = {
-  id: "community.vidking.fix",
-  version: "1.1.0",
-  name: "VidKing Fix (Clicker)",
-  description: "Auto-clicks play button to grab links",
+  id: "community.vidking.hybrid",
+  version: "1.0.5",
+  name: "VidKing Private (Render)",
+  description: "Hosted on Render.com",
   resources: ["stream"],
   types: ["movie", "series"],
   catalogs: [],
@@ -22,41 +23,32 @@ async function getStreamDetails(embedUrl) {
   let browser = null;
 
   try {
+    // Launch standard Puppeteer (works with Docker)
     browser = await puppeteer.launch({
       headless: "new",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
+        "--disable-dev-shm-usage", // Helps preventing crashes in Docker
         "--disable-accelerated-2d-canvas",
-        "--disable-gpu",
-        "--mute-audio" // Good for saving resources
+        "--disable-gpu"
       ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, 
     });
 
     const page = await browser.newPage();
     let videoUrl = null;
 
-    // --- 1. NETWORK INTERCEPTION (The Ear) ---
     await page.setRequestInterception(true);
     page.on("request", (req) => {
-      const rUrl = req.url();
-      const rType = req.resourceType();
-
-      // Check if this request is the video file
-      if (rUrl.includes(".m3u8") || (rUrl.includes(".mp4") && !rUrl.includes("loader"))) {
-        console.log("✅ Found Stream:", rUrl);
-        videoUrl = rUrl;
-        req.abort(); // Stop loading, we have what we need
-        return;
-      }
-
-      // Block heavy stuff to speed up scraping
-      // Note: We ALLOW scripts so the player works
-      if (["image", "font", "stylesheet"].includes(rType)) {
+      if (["image", "stylesheet", "font"].includes(req.resourceType())) {
         req.abort();
       } else {
+        const url = req.url();
+        if ((url.includes(".m3u8") || url.includes(".mp4")) && !videoUrl) {
+          console.log("✅ Found:", url);
+          videoUrl = url;
+        }
         req.continue();
       }
     });
@@ -64,76 +56,19 @@ async function getStreamDetails(embedUrl) {
     await page.setUserAgent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
     );
-
-    // --- 2. LOAD PAGE ---
-    try {
-      await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-      console.log("📄 Page DOM Loaded");
-    } catch (e) {
-      console.log("⚠️ Page load timeout (proceeding anyway)");
-    }
-
-    // --- 3. THE FIX: AUTO-CLICKER ---
     
-    // Give site 1 second to initialize iframes
-    await new Promise(r => setTimeout(r, 1000));
+    // Increased timeout slightly for safety on server
+    await page.goto(embedUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
 
-    console.log("🖱️ Searching for Play Button in all frames...");
-    
-    // Get all frames (The main page + all iframes)
-    const frames = page.frames();
-    
-    // Loop through every frame to find the button
-    for (const frame of frames) {
-      try {
-        const clicked = await frame.evaluate(() => {
-          // List of common play button names
-          const selectors = [
-            ".vjs-big-play-button", 
-            ".jw-display-icon-container", 
-            ".play-button", 
-            "button[class*='play']", 
-            "div[class*='play']",
-            "video"
-          ];
-          
-          for (const s of selectors) {
-            const el = document.querySelector(s);
-            if (el) {
-              el.click(); // CLICK IT!
-              return true;
-            }
-          }
-          return false;
-        });
-
-        if (clicked) {
-          console.log("▶️ Clicked a play button!");
-          break; // Stop looking if we found one
-        }
-      } catch (e) {
-        // Ignore errors from cross-origin frames
-      }
-    }
-
-    // --- 4. WAIT FOR REACTION ---
-    // Now that we clicked, wait 3 seconds for the network request to fly out
-    console.log("⏳ Waiting 3s for network...");
-    await new Promise(r => setTimeout(r, 3000));
-
-    // Final check loop (Just in case it's slow)
-    if (!videoUrl) {
-        console.log("⚠️ Still waiting...");
-        const start = Date.now();
-        while (!videoUrl && Date.now() - start < 3000) {
-            await new Promise(r => setTimeout(r, 500));
-        }
+    const startTime = Date.now();
+    // Wait up to 8 seconds for the video URL to appear
+    while (!videoUrl && Date.now() - startTime < 8000) {
+      await new Promise((r) => setTimeout(r, 500));
     }
 
     return videoUrl;
-
   } catch (error) {
-    console.log("❌ Browser Error:", error.message);
+    console.log("Browser Error:", error.message);
     return null;
   } finally {
     if (browser) await browser.close();
@@ -141,6 +76,7 @@ async function getStreamDetails(embedUrl) {
 }
 
 builder.defineStreamHandler(async (args) => {
+  // Gets Key from .env (Local) or Render Environment Variables
   const API_KEY = process.env.TMDB_API_KEY;
 
   if (!API_KEY) {
@@ -162,30 +98,29 @@ builder.defineStreamHandler(async (args) => {
 
     if (!tmdbId) return { streams: [] };
 
-    // VIDKING URL STRUCTURE
     const embedUrl =
       args.type === "movie"
         ? `https://www.vidking.net/embed/movie/${tmdbId}`
-        : `https://www.vidking.net/embed/tv/${tmdbId}/${args.id.split(":")[1]}/${args.id.split(":")[2]}`;
+        : `https://www.vidking.net/embed/tv/${tmdbId}/${
+            args.id.split(":")[1]
+          }/${args.id.split(":")[2]}`;
 
     const streamUrl = await getStreamDetails(embedUrl);
 
-    if (!streamUrl) {
-        console.log("❌ Failed to grab link for:", embedUrl);
-        return { streams: [] };
-    }
+    if (!streamUrl) return { streams: [] };
 
     return {
       streams: [
         {
-          title: "▶️ VidKing 4K",
+          title: "▶️ Play VidKing (Render)",
           url: streamUrl,
           behaviorHints: {
             notWebReady: true,
             proxyHeaders: {
               request: {
                 Referer: "https://www.vidking.net/",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+                "User-Agent":
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
               },
             },
           },
@@ -198,6 +133,9 @@ builder.defineStreamHandler(async (args) => {
   }
 });
 
+// --- RENDER.COM STARTUP LOGIC ---
+// Render assigns a random port to process.env.PORT
 const port = process.env.PORT || 7000;
 serveHTTP(builder.getInterface(), { port: port });
 console.log(`🚀 Server running on port ${port}`);
+console.log(`🔗 Open: http://127.0.0.1:${port}/manifest.json`);
