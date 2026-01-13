@@ -11,4 +11,4 @@ RUN npm ci
 COPY . .
 
 # Start the app
-CMD [ "node", "addon.js" ]
+CMD [ "node", "api/addon.js" ]
