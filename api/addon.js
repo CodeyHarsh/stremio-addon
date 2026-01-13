@@ -23,18 +23,25 @@ async function getStreamDetails(embedUrl) {
   let browser = null;
 
   try {
-    // Launch standard Puppeteer (works with Docker)
+    // ... inside getStreamDetails function ...
+
     browser = await puppeteer.launch({
       headless: "new",
+      // CRITICAL: These args force Chrome to use less memory
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage", // Helps preventing crashes in Docker
+        "--disable-dev-shm-usage",
         "--disable-accelerated-2d-canvas",
-        "--disable-gpu"
+        "--disable-gpu",
+        "--single-process", // huge memory saver
+        "--no-zygote",      // saves memory
+        "--renderer-process-limit=1" // limits tabs
       ],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, 
     });
+
+// ... rest of your code ...
 
     const page = await browser.newPage();
     let videoUrl = null;
